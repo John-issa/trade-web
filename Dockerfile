@@ -1,27 +1,31 @@
 FROM python:3.11-slim
 
-# tiny init for PID 1
-RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential && rm -rf /var/lib/apt/lists/*
+
+# App dir
 WORKDIR /app
 
-# Copy wrapper
-COPY app/ app/
-COPY requirements-wrapper.txt ./
-COPY docker/prestart.sh /usr/local/bin/prestart.sh
-RUN chmod +x /usr/local/bin/prestart.sh
+# Install wrapper deps
+COPY requirements-wrapper.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install deps (pin exact versions + hashes)
-RUN pip install --no-cache-dir -r requirements-wrapper.txt
+# Copy app code
+COPY app ./app
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Non-root user
-RUN useradd -m -u 10001 appuser && \
-    mkdir -p /data /tmp && chown -R appuser:appuser /data /tmp /app
-USER appuser
+# Writable dirs (persisted via volumes)
+RUN mkdir -p /data/captures /srv/trade-repo
 
-ENV REPO_DIR=/app/trade
-ENV PORT=8000
+# Defaults (can be overridden in compose)
+ENV REPO_DIR=/srv/trade-repo \
+    OUTPUT_DIR=/data/captures \
+    REPO_GIT=https://github.com/slsecret/options-trading-assistant \
+    MPLBACKEND=Agg \
+    PYTHONUNBUFFERED=1
 
-# tini -> prestart (git pull) -> gunicorn(uvicorn)
-ENTRYPOINT ["/usr/bin/tini","--"]
-CMD ["/usr/local/bin/prestart.sh"]
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
