@@ -1,0 +1,21 @@
+services:
+  trade:
+    build: .
+    image: trade-wrapper:latest
+    container_name: trade
+    env_file: .env
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      # Your friend’s repo checked out onto the host, mounted read-only in the container
+      - /mnt/user/appdata/trade-webwrap/trade-repo:/app/trade:ro
+      # Optional: persist generated plots across container restarts
+      - /mnt/user/appdata/trade-webwrap/plots:/app/trade/plots
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"  # keep private; front with NGINX/Cloudflare
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
