@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import TimeoutExpired
 from typing import Iterable
 
 import pandas as pd
@@ -59,7 +60,16 @@ def index():
 @app.get("/api/run/plot")
 def run_plot(symbol: str = Query("AAPL"), days: int = Query(30)):
     # Adjust to your friend’s real CLI args if needed
-    res = run_repo_script("plot.py", [symbol, str(days)])
+    try:
+        res = run_repo_script("plot.py", [symbol, str(days)])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except TimeoutExpired as exc:
+        raise HTTPException(504, f"plot.py timed out: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
     if res["returncode"] != 0:
         raise HTTPException(500, f"plot.py failed:\n{res['stderr']}")
     return JSONResponse({"ok": True, "plots": res["plots"], "stdout": res["stdout"]})
@@ -67,7 +77,16 @@ def run_plot(symbol: str = Query("AAPL"), days: int = Query(30)):
 
 @app.get("/api/run/script")
 def run_script(name: str = Query(..., description="Script filename, e.g. plot.py")):
-    res = run_repo_script(name)
+    try:
+        res = run_repo_script(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except TimeoutExpired as exc:
+        raise HTTPException(504, f"{name} timed out: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
     if res["returncode"] != 0:
         raise HTTPException(500, f"{name} failed:\n{res['stderr']}")
     return JSONResponse({"ok": True, "plots": res["plots"], "stdout": res["stdout"]})
