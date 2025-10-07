@@ -12,7 +12,7 @@ COPY docker/prestart.sh /usr/local/bin/prestart.sh
 RUN chmod +x /usr/local/bin/prestart.sh
 
 # Install deps (pin exact versions + hashes)
-RUN pip install --no-cache-dir --require-hashes -r requirements-wrapper.txt
+RUN pip install --no-cache-dir -r requirements-wrapper.txt
 
 # Non-root user
 RUN useradd -m -u 10001 appuser && \
