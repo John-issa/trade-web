@@ -8,8 +8,7 @@ services:
     environment:
       REPO_DIR: /srv/trade-repo
       OUTPUT_DIR: /data/captures
-      # You can switch to your fork any time:
-      # REPO_GIT: https://github.com/YourUser/options-trading-assistant
+      # REPO_GIT: https://github.com/YourFork/options-trading-assistant
     ports:
       - "8000:8000"
     volumes:
