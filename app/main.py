@@ -8,19 +8,14 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .run_script import ALLOWED_SCRIPTS, REPO_DIR, ensure_plots_dir, run_repo_script
+from .run_script import ALLOWED_SCRIPTS, PLOTS_DIR, REPO_DIR, run_repo_script
 
 
 app = FastAPI(title="Trade Wrapper", version="0.1.0")
 
 # Serve generated plots as static files (if the repo has a plots dir)
-try:
-    plots_dir = ensure_plots_dir()
-except RuntimeError:
-    plots_dir = None
-
-if plots_dir and plots_dir.exists():
-    app.mount("/plots", StaticFiles(directory=str(plots_dir)), name="plots")
+if PLOTS_DIR.exists():
+    app.mount("/plots", StaticFiles(directory=str(PLOTS_DIR)), name="plots")
 
 
 def _list_available_csvs() -> list[str]:

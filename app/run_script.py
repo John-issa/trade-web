@@ -16,18 +16,7 @@ def _default_repo_dir() -> Path:
 
 
 REPO_DIR = _default_repo_dir()
-
-
-def _default_plots_dir() -> Path:
-    env_dir = os.getenv("PLOTS_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser().resolve()
-    return (REPO_DIR / "plots").resolve()
-
-
-_DEFAULT_PLOTS_DIR = _default_plots_dir()
-_FALLBACK_PLOTS_DIR = Path(tempfile.gettempdir()).resolve() / "trade-wrapper-plots"
-_plots_dir = _DEFAULT_PLOTS_DIR
+PLOTS_DIR = (REPO_DIR / "plots").resolve()
 
 
 def _load_allowed_scripts() -> set[str]:
@@ -41,50 +30,28 @@ def _load_allowed_scripts() -> set[str]:
 ALLOWED_SCRIPTS = _load_allowed_scripts()
 
 
-def get_plots_dir() -> Path:
-    return _plots_dir
-
-
-def ensure_plots_dir() -> Path:
-    global _plots_dir
-
-    target = _plots_dir
+def _ensure_plots_dir() -> None:
     try:
-        target.mkdir(parents=True, exist_ok=True)
+        PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
-        if target == _FALLBACK_PLOTS_DIR:
-            raise RuntimeError(
-                f"Unable to create plots directory at {target}") from exc
-        _plots_dir = _FALLBACK_PLOTS_DIR
-        target = _plots_dir
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except PermissionError as fallback_exc:
-            raise RuntimeError(
-                f"Unable to create plots directory at {target}") from fallback_exc
-    if not os.access(target, os.W_OK | os.X_OK):
-        if target == _FALLBACK_PLOTS_DIR:
-            raise RuntimeError(f"Plots directory is not writable: {target}")
-        _plots_dir = _FALLBACK_PLOTS_DIR
-        return ensure_plots_dir()
-    return _plots_dir
+        raise RuntimeError(f"Unable to create plots directory at {PLOTS_DIR}") from exc
 
 
-def _snapshot_plot_dir(plots_dir: Path) -> dict[str, int]:
-    if not plots_dir.is_dir():
+def _snapshot_plot_dir() -> dict[str, int]:
+    if not PLOTS_DIR.is_dir():
         return {}
     return {
         item.name: int(item.stat().st_mtime_ns)
-        for item in plots_dir.iterdir()
+        for item in PLOTS_DIR.iterdir()
         if item.is_file()
     }
 
 
-def _collect_new_plots(plots_dir: Path, before: dict[str, int]) -> list[Path]:
-    if not plots_dir.is_dir():
+def _collect_new_plots(before: dict[str, int]) -> list[Path]:
+    if not PLOTS_DIR.is_dir():
         return []
     updated: list[Path] = []
-    for path in plots_dir.iterdir():
+    for path in PLOTS_DIR.iterdir():
         if not path.is_file():
             continue
         previous = before.get(path.name)
@@ -94,8 +61,8 @@ def _collect_new_plots(plots_dir: Path, before: dict[str, int]) -> list[Path]:
     return sorted(updated, key=lambda item: item.stat().st_mtime_ns)
 
 
-def _session_plot_dir(plots_dir: Path, session_id: str) -> Path:
-    return plots_dir / f"session-{session_id}"
+def _session_plot_dir(session_id: str) -> Path:
+    return PLOTS_DIR / f"session-{session_id}"
 
 
 def run_repo_script(
@@ -122,11 +89,11 @@ def run_repo_script(
     if not script_path.is_file():
         raise FileNotFoundError(f"Script not found: {script_path}")
 
-    plots_dir = ensure_plots_dir()
-    before_snapshot = _snapshot_plot_dir(plots_dir)
+    _ensure_plots_dir()
+    before_snapshot = _snapshot_plot_dir()
 
     session_id = uuid.uuid4().hex[:12]
-    session_dir = _session_plot_dir(plots_dir, session_id)
+    session_dir = _session_plot_dir(session_id)
     workdir = Path(tempfile.mkdtemp(prefix="sess-", dir="/tmp"))
 
     cmd = ["python", str(script_path), *map(str, args)]
@@ -140,7 +107,7 @@ def run_repo_script(
 
     new_plots: list[str] = []
     if proc.returncode == 0:
-        for plot in _collect_new_plots(plots_dir, before_snapshot):
+        for plot in _collect_new_plots(before_snapshot):
             session_dir.mkdir(parents=True, exist_ok=True)
             dest = session_dir / plot.name
             try:
