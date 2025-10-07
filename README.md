@@ -51,6 +51,9 @@ exercise it locally for development.
 - `REPO_DIR` – Override the path to the trading assistant repository.
 - `ALLOWED_SCRIPTS` – Comma separated list of script filenames that the wrapper
   is allowed to execute. Defaults to `plot.py,csvViewer.py,returns.py,options.py`.
+- `PLOTS_DIR` – Optional path where generated plots should be stored. Defaults
+  to `<REPO_DIR>/plots`, but if that directory is read-only the wrapper will
+  fall back to a writable location under the system temp directory.
 
 ## Docker / Unraid
 
