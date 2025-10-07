@@ -94,7 +94,7 @@ def run_repo_script(
 
     session_id = uuid.uuid4().hex[:12]
     session_dir = _session_plot_dir(session_id)
-    workdir = Path(tempfile.mkdtemp(prefix="sess-", dir="/tmp"))
+    workdir = Path(tempfile.mkdtemp(prefix="sess-"))
 
     cmd = ["python", str(script_path), *map(str, args)]
     proc = subprocess.run(
