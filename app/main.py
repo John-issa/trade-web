@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
 from subprocess import TimeoutExpired
-from typing import Iterable
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .run_script import ALLOWED_SCRIPTS, PLOTS_DIR, REPO_DIR, run_repo_script
+from .run_script import PLOTS_DIR, REPO_DIR, run_repo_script
 
 
 app = FastAPI(title="Trade Wrapper", version="0.1.0")
@@ -19,42 +17,56 @@ if PLOTS_DIR.exists():
     app.mount("/plots", StaticFiles(directory=str(PLOTS_DIR)), name="plots")
 
 
-def _list_available_csvs() -> list[str]:
-    search_roots: Iterable[Path] = [REPO_DIR]
-    csvs: list[str] = []
-    for root in search_roots:
-        if not root.exists():
-            continue
-        for path in root.rglob("*.csv"):
-            try:
-                rel = path.relative_to(REPO_DIR)
-            except ValueError:
-                continue
-            csvs.append(rel.as_posix())
-    return sorted(csvs)[:50]
+def _render_csv_viewer_page(result: dict[str, object]) -> HTMLResponse:
+    """Turn the output of ``csvViewer.py`` into an embeddable HTML page."""
+
+    stdout = str(result.get("stdout") or "").strip()
+    plots = [path for path in result.get("plots", []) if isinstance(path, str)]
+
+    body: list[str] = [
+        "<style>body{font-family:system-ui, sans-serif;margin:0;background:#111;color:#f5f5f5;}",
+        "main{display:flex;flex-direction:column;height:100vh;}",
+        "header{padding:1.5rem 2rem;border-bottom:1px solid #333;}",
+        "header h1{margin:0;font-size:1.5rem;}",
+        "section.viewer{flex:1;min-height:0;padding:1rem 2rem;overflow:auto;background:#1b1b1b;}",
+        "iframe{border:0;width:100%;height:100%;background:#fff;border-radius:0.5rem;}",
+        "pre{background:#000;padding:1rem;border-radius:0.5rem;overflow:auto;}</style>",
+        "<main>",
+        "<header><h1>csvViewer.py</h1><p>Latest output from the trading assistant.</p></header>",
+        "<section class='viewer'>",
+    ]
+
+    iframe_src = next((plot for plot in reversed(plots) if plot.endswith(".html")), None)
+    if iframe_src:
+        body.append(f"<iframe src='{iframe_src}' title='csvViewer output'></iframe>")
+    elif stdout:
+        escaped = stdout.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        body.append(f"<pre>{escaped}</pre>")
+    else:
+        body.append(
+            "<pre>No output captured from csvViewer.py. Check the script for details.</pre>"
+        )
+
+    body.extend(["</section>", "</main>"])
+    return HTMLResponse("".join(body))
 
 
 @app.get("/")
 def index():
-    script_links = "".join(
-        f"<li><a href='/api/run/plot?symbol=AAPL&days=30'>plot.py (example)</a></li>"
-        if script == "plot.py"
-        else f"<li><a href='/api/run/script?name={script}'>Run {script}</a></li>"
-        for script in sorted(ALLOWED_SCRIPTS)
-    )
-    csv_links = "".join(
-        f"<li><a href='/api/view/csv?file={path}'>{path}</a></li>"
-        for path in _list_available_csvs()
-    )
-    html = [
-        "<h1>Trade</h1>",
-        "<p>Simple wrapper UI.</p>",
-        "<h2>Scripts</h2>",
-        f"<ul>{script_links or '<li>No scripts configured.</li>'}</ul>",
-    ]
-    if csv_links:
-        html.extend(["<h2>CSV files</h2>", f"<ul>{csv_links}</ul>"])
-    return HTMLResponse("".join(html))
+    try:
+        result = run_repo_script("csvViewer.py")
+    except FileNotFoundError as exc:
+        raise HTTPException(500, f"csvViewer.py is not available: {exc}") from exc
+    except TimeoutExpired as exc:
+        raise HTTPException(504, f"csvViewer.py timed out: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    if result.get("returncode") != 0:
+        stderr = str(result.get("stderr") or "").strip()
+        raise HTTPException(500, f"csvViewer.py failed:\n{stderr}")
+
+    return _render_csv_viewer_page(result)
 
 
 @app.get("/api/run/plot")
