@@ -1,26 +1,164 @@
-import os, subprocess, tempfile, pathlib, shlex, uuid
+import os
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Iterable, Sequence
 
-REPO_DIR = os.getenv("REPO_DIR", "/app/trade")
-PLOTS_DIR = os.path.join(REPO_DIR, "plots")
-ALLOWED_SCRIPTS = {"plot.py","csvViewer.py","returns.py","options.py"}
 
-def run_repo_script(script: str, args: list[str], timeout: int = 120):
+def _default_repo_dir() -> Path:
+    env_dir = os.getenv("REPO_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    # Local development fallback – the trade repo lives beside this wrapper.
+    return Path(__file__).resolve().parents[1] / "trade-repo"
+
+
+REPO_DIR = _default_repo_dir()
+
+
+def _default_plots_dir() -> Path:
+    env_dir = os.getenv("PLOTS_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    return (REPO_DIR / "plots").resolve()
+
+
+_DEFAULT_PLOTS_DIR = _default_plots_dir()
+_FALLBACK_PLOTS_DIR = Path(tempfile.gettempdir()).resolve() / "trade-wrapper-plots"
+_plots_dir = _DEFAULT_PLOTS_DIR
+
+
+def _load_allowed_scripts() -> set[str]:
+    env = os.getenv("ALLOWED_SCRIPTS")
+    if not env:
+        return {"plot.py", "csvViewer.py", "returns.py", "options.py"}
+    names: Iterable[str] = (part.strip() for part in env.split(","))
+    return {Path(name).name for name in names if name}
+
+
+ALLOWED_SCRIPTS = _load_allowed_scripts()
+
+
+def get_plots_dir() -> Path:
+    return _plots_dir
+
+
+def ensure_plots_dir() -> Path:
+    global _plots_dir
+
+    target = _plots_dir
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        if target == _FALLBACK_PLOTS_DIR:
+            raise RuntimeError(
+                f"Unable to create plots directory at {target}") from exc
+        _plots_dir = _FALLBACK_PLOTS_DIR
+        target = _plots_dir
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except PermissionError as fallback_exc:
+            raise RuntimeError(
+                f"Unable to create plots directory at {target}") from fallback_exc
+    if not os.access(target, os.W_OK | os.X_OK):
+        if target == _FALLBACK_PLOTS_DIR:
+            raise RuntimeError(f"Plots directory is not writable: {target}")
+        _plots_dir = _FALLBACK_PLOTS_DIR
+        return ensure_plots_dir()
+    return _plots_dir
+
+
+def _snapshot_plot_dir(plots_dir: Path) -> dict[str, int]:
+    if not plots_dir.is_dir():
+        return {}
+    return {
+        item.name: int(item.stat().st_mtime_ns)
+        for item in plots_dir.iterdir()
+        if item.is_file()
+    }
+
+
+def _collect_new_plots(plots_dir: Path, before: dict[str, int]) -> list[Path]:
+    if not plots_dir.is_dir():
+        return []
+    updated: list[Path] = []
+    for path in plots_dir.iterdir():
+        if not path.is_file():
+            continue
+        previous = before.get(path.name)
+        current = int(path.stat().st_mtime_ns)
+        if previous is None or current > previous:
+            updated.append(path)
+    return sorted(updated, key=lambda item: item.stat().st_mtime_ns)
+
+
+def _session_plot_dir(plots_dir: Path, session_id: str) -> Path:
+    return plots_dir / f"session-{session_id}"
+
+
+def run_repo_script(
+    script: str,
+    args: Sequence[str] | None = None,
+    timeout: int = 120,
+) -> dict[str, object]:
+    """Execute an allowed script from the cloned trading repo.
+
+    The command is executed inside the trading repository so that relative file
+    access continues to work.  Newly created or modified plot files are copied
+    into a session specific directory in ``plots`` so that concurrent users do
+    not clobber each other's files.
+    """
+
+    args = list(args or [])
     if script not in ALLOWED_SCRIPTS:
-        raise ValueError("Forbidden script")
+        raise ValueError(f"Forbidden script: {script!r}")
 
-    # Isolate each run a bit
-    workdir = tempfile.mkdtemp(prefix="sess-", dir="/tmp")
-    cmd = ["python", os.path.join(REPO_DIR, script), *args]
+    if "/" in script or script.startswith(".."):
+        raise ValueError("Script name may not contain path separators")
+
+    script_path = REPO_DIR / script
+    if not script_path.is_file():
+        raise FileNotFoundError(f"Script not found: {script_path}")
+
+    plots_dir = ensure_plots_dir()
+    before_snapshot = _snapshot_plot_dir(plots_dir)
+
+    session_id = uuid.uuid4().hex[:12]
+    session_dir = _session_plot_dir(plots_dir, session_id)
+    workdir = Path(tempfile.mkdtemp(prefix="sess-", dir="/tmp"))
+
+    cmd = ["python", str(script_path), *map(str, args)]
     proc = subprocess.run(
-        cmd, cwd=REPO_DIR, capture_output=True, text=True, timeout=timeout
+        cmd,
+        cwd=str(REPO_DIR),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
-    plots = []
-    if os.path.isdir(PLOTS_DIR):
-        plots = [str(p) for p in pathlib.Path(PLOTS_DIR).iterdir() if p.is_file()]
+
+    new_plots: list[str] = []
+    if proc.returncode == 0:
+        for plot in _collect_new_plots(plots_dir, before_snapshot):
+            session_dir.mkdir(parents=True, exist_ok=True)
+            dest = session_dir / plot.name
+            try:
+                shutil.copy2(plot, dest)
+            except FileNotFoundError:
+                # Plot disappeared between listing and copy; skip it.
+                continue
+            new_plots.append(f"/plots/{session_dir.name}/{dest.name}")
+    else:
+        # Ensure failed runs do not leak empty session directories.
+        if session_dir.exists() and not any(session_dir.iterdir()):
+            session_dir.rmdir()
+
     return {
         "returncode": proc.returncode,
         "stdout": proc.stdout[-10000:],
         "stderr": proc.stderr[-10000:],
-        "plots": plots,
-        "workdir": workdir,
+        "plots": new_plots,
+        "workdir": str(workdir),
+        "session": session_dir.name if session_dir.exists() else None,
     }
